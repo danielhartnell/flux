@@ -149,9 +149,9 @@ func (opts *controllerReleaseOpts) RunE(cmd *cobra.Command, args []string) error
 			return err
 		}
 
-		spec, aborted := promptSpec(cmd.OutOrStdout(), result, opts.verbosity)
-		if aborted {
-			fmt.Fprintln(cmd.OutOrStderr(), "Aborted.")
+		spec, err := promptSpec(cmd.OutOrStdout(), result, opts.verbosity)
+		if err != nil {
+			fmt.Fprintln(cmd.OutOrStderr(), err.Error())
 			return nil
 		}
 
@@ -167,15 +167,12 @@ func (opts *controllerReleaseOpts) RunE(cmd *cobra.Command, args []string) error
 	return await(ctx, cmd.OutOrStdout(), cmd.OutOrStderr(), opts.API, jobID, !opts.dryRun, opts.verbosity)
 }
 
-func promptSpec(out io.Writer, result job.Result, verbosity int) (update.ContainerSpecs, bool) {
+func promptSpec(out io.Writer, result job.Result, verbosity int) (update.ContainerSpecs, error) {
 	menu := update.NewMenu(out, result.Result, verbosity)
-	containerSpecs, aborted := menu.Run()
-	if len(containerSpecs) == 0 {
-		aborted = true
-	}
+	containerSpecs, err := menu.Run()
 	return update.ContainerSpecs{
 		Kind: update.ReleaseKindExecute,
 		ContainerSpecs: containerSpecs,
 		SkipMismatches: false,
-	}, aborted
+	}, err
 }

@@ -2,6 +2,7 @@ package update
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,10 +15,14 @@ import (
 )
 
 // Escape sequences.
-const moveCursorUp = "\033[%dA"
-const moveStartOfLine = "\r"
-const hideCursor = "\033[?25l"
-const showCursor = "\033[?25h"
+const (
+	moveCursorUp    = "\033[%dA"
+	moveStartOfLine = "\r"
+	hideCursor      = "\033[?25l"
+	showCursor      = "\033[?25h"
+
+	tableHeading = "CONTROLLER \tSTATUS \tUPDATES"
+)
 
 type WriteFlusher interface {
 	io.Writer
@@ -31,8 +36,8 @@ type ClearableLineWriter struct {
 }
 
 func NewClearableWriter(wf WriteFlusher) *ClearableLineWriter {
-	ws, _ := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
 	w := &ClearableLineWriter{wf: wf, lines: 0, width: 9999}
+	ws, _ := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
 	if ws != nil && ws.Col != 0 {
 		w.width = ws.Col
 	}
@@ -71,6 +76,7 @@ type menuItem struct {
 	selected bool
 }
 
+// Menu presents a list of controllers which can be interacted with.
 type Menu struct {
 	out        *ClearableLineWriter
 	items      []menuItem
@@ -142,22 +148,25 @@ func (m *Menu) AddItem(mi menuItem) {
 }
 
 // Run starts the interactive menu mode.
-func (m *Menu) Run() (specs map[flux.ResourceID][]ContainerUpdate, aborted bool) {
-	specs = make(map[flux.ResourceID][]ContainerUpdate)
+func (m *Menu) Run() (map[flux.ResourceID][]ContainerUpdate, error) {
+	specs := make(map[flux.ResourceID][]ContainerUpdate)
+	if m.selectable == 0 {
+		return specs, errors.New("No changes found.")
+	}
 
-	m.doPrint(true)
+	m.printInteractive()
 	fmt.Printf(hideCursor)
 	defer fmt.Printf(showCursor)
 
 	for {
 		ascii, keyCode, err := getChar()
 		if err != nil {
-			return specs, true
+			return specs, err
 		}
 
 		switch ascii {
 		case 3, 27, 'q':
-			return specs, true
+			return specs, errors.New("Aborted.")
 		case ' ':
 			m.toggleCursor()
 		case 13:
@@ -167,7 +176,7 @@ func (m *Menu) Run() (specs map[flux.ResourceID][]ContainerUpdate, aborted bool)
 				}
 			}
 			m.out.Writeln("")
-			return
+			return specs, nil
 		case 9, 'j':
 			m.cursorDown()
 		case 'k':
@@ -181,42 +190,34 @@ func (m *Menu) Run() (specs map[flux.ResourceID][]ContainerUpdate, aborted bool)
 			m.cursorUp()
 		}
 	}
-	return
 }
 
 func (m *Menu) Print() {
-	m.doPrint(false)
+	m.out.Writeln(tableHeading)
+	var previd flux.ResourceID
+	for _, item := range m.items {
+		inline := previd == item.id
+		m.out.Writeln(m.renderItem(item, inline))
+		previd = item.id
+	}
+	m.out.Flush()
 }
 
-func (m *Menu) doPrint(interactive bool) {
-	if interactive {
-		m.out.Clear()
-	}
-	heading := "CONTROLLER \tSTATUS \tUPDATES"
-	if interactive {
-		heading = "   " + heading
-	}
-
-	m.out.Writeln(heading)
+func (m *Menu) printInteractive() {
+	m.out.Clear()
+	m.out.Writeln("   " + tableHeading)
 	i := 0
 	var previd flux.ResourceID
 	for _, item := range m.items {
 		inline := previd == item.id
-		if interactive {
-			m.out.Writeln(m.renderInteractiveItem(item, inline, i))
-		} else {
-			m.out.Writeln(m.renderItem(item, inline))
-		}
-
+		m.out.Writeln(m.renderInteractiveItem(item, inline, i))
 		previd = item.id
 		if item.selectable() {
 			i++
 		}
 	}
-	if interactive {
-		m.out.Writeln("")
-		m.out.Writeln("Use [Space] to deselect containers and hit [Enter] to release selected.")
-	}
+	m.out.Writeln("")
+	m.out.Writeln("Use [Space] to deselect containers and hit [Enter] to release selected.")
 
 	m.out.Flush()
 }
@@ -245,17 +246,17 @@ func (m *Menu) renderInteractiveItem(item menuItem, inline bool, index int) stri
 
 func (m *Menu) toggleCursor() {
 	m.items[m.cursor].selected = !m.items[m.cursor].selected
-	m.doPrint(true)
+	m.printInteractive()
 }
 
 func (m *Menu) cursorDown() {
 	m.cursor = (m.cursor + 1) % m.selectable
-	m.doPrint(true)
+	m.printInteractive()
 }
 
 func (m *Menu) cursorUp() {
 	m.cursor = (m.cursor + m.selectable - 1) % m.selectable
-	m.doPrint(true)
+	m.printInteractive()
 }
 
 func (i menuItem) checkbox() string {
